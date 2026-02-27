@@ -1,5 +1,7 @@
 package dev.lzrvc.bugcatch;
 
+import dev.lzrvc.bugcatch.internal.JsonUtil;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,6 +23,7 @@ public final class BugCatchClient {
 
     private final BugCatchOptions options;
     private final String ingestUrl;
+    private final String metricsUrl;
     private final HttpClient httpClient;
     private final BreadcrumbBuffer breadcrumbs;
 
@@ -34,6 +37,7 @@ public final class BugCatchClient {
     BugCatchClient(BugCatchOptions options) {
         this.options     = options;
         this.ingestUrl   = options.getDsn();          // DSN *is* the ingest URL
+        this.metricsUrl  = buildMetricsUrl(options.getDsn());
         this.httpClient  = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
@@ -141,6 +145,36 @@ public final class BugCatchClient {
     }
 
     /**
+     * Report an API call timing metric to BugCatch.
+     *
+     * <p>Use this to track outbound HTTP calls or incoming request durations.
+     * The route should be a template (e.g. {@code "/api/orders/:id"}), not a
+     * concrete URL with real IDs — use {@link #trackRequest(String, String, long, int)}
+     * if you have a raw URL and want automatic normalization.
+     *
+     * <p><b>Spring Boot example</b> — implement a {@code HandlerInterceptor}:
+     * <pre>{@code
+     * public boolean preHandle(HttpServletRequest req, ...) {
+     *     req.setAttribute("_bugcatch_start", System.currentTimeMillis());
+     *     return true;
+     * }
+     * public void afterCompletion(HttpServletRequest req, HttpServletResponse res, ...) {
+     *     long duration = System.currentTimeMillis() - (long) req.getAttribute("_bugcatch_start");
+     *     BugCatch.trackRequest(req.getMethod(), req.getRequestURI(), duration, res.getStatus());
+     * }
+     * }</pre>
+     *
+     * @param method     HTTP method, e.g. {@code "GET"}
+     * @param route      Request path or URL (UUIDs and numeric IDs are normalized to {@code :id})
+     * @param durationMs Duration in milliseconds
+     * @param statusCode HTTP response status code
+     */
+    public void trackRequest(String method, String route, long durationMs, int statusCode) {
+        if (method == null || route == null) return;
+        sendMetric(method.toUpperCase(), normalizeRoute(route), durationMs, statusCode);
+    }
+
+    /**
      * Remove the auto-installed uncaught exception handler and clear internal state.
      * Call this if you need to re-initialize the SDK (e.g. in tests).
      */
@@ -216,6 +250,56 @@ public final class BugCatchClient {
                 });
 
         return eventId;
+    }
+
+    /** Derives the metrics endpoint URL from the ingest DSN. */
+    private static String buildMetricsUrl(String dsn) {
+        // DSN: http://host/ingest/{projectId}?key={sdkKey}
+        // → http://host/ingest/{projectId}/metrics?key={sdkKey}
+        int q = dsn.indexOf('?');
+        if (q < 0) return dsn + "/metrics";
+        return dsn.substring(0, q) + "/metrics?" + dsn.substring(q + 1);
+    }
+
+    /**
+     * Replaces UUID and purely-numeric path segments with {@code :id} so
+     * metrics group by route template rather than individual resource IDs.
+     */
+    private static String normalizeRoute(String route) {
+        String path;
+        try {
+            path = new URI(route).getPath();
+            if (path == null || path.isEmpty()) path = route;
+        } catch (Exception e) {
+            // Not a full URL — treat as path; strip query string
+            int q = route.indexOf('?');
+            path = q >= 0 ? route.substring(0, q) : route;
+        }
+        return path
+                .replaceAll("/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "/:id")
+                .replaceAll("/\\d{1,20}(?=/|$)", "/:id");
+    }
+
+    private void sendMetric(String method, String route, long durationMs, int statusCode) {
+        String json = "{" +
+                "\"method\":" + JsonUtil.escape(method) + "," +
+                "\"route\":" + JsonUtil.escape(route) + "," +
+                "\"duration_ms\":" + durationMs + "," +
+                "\"status_code\":" + statusCode +
+                "}";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(metricsUrl))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(5))
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding())
+                .exceptionally(ex -> {
+                    debug("Failed to send metric: " + ex.getMessage());
+                    return null;
+                });
     }
 
     private boolean shouldIgnore(Throwable error) {

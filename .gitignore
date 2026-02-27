@@ -4,3 +4,5 @@ target/
 *.jar
 !*-sources.jar
 .DS_Store
+.idea/
+*.iml

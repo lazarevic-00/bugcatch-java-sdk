@@ -133,6 +133,21 @@ public final class BugCatch {
     }
 
     /**
+     * Report an API call timing metric to BugCatch.
+     *
+     * <p>UUID and numeric path segments are automatically normalized to {@code :id}.
+     *
+     * @param method     HTTP method, e.g. {@code "GET"}
+     * @param route      Request path or full URL
+     * @param durationMs Duration in milliseconds
+     * @param statusCode HTTP response status code
+     */
+    public static void trackRequest(String method, String route, long durationMs, int statusCode) {
+        BugCatchClient c = instance;
+        if (c != null) c.trackRequest(method, route, durationMs, statusCode);
+    }
+
+    /**
      * Destroy the current client, removing auto-installed handlers.
      * Useful in tests or when re-initialising the SDK.
      */
