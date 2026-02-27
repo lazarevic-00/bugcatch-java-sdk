@@ -201,18 +201,17 @@ public final class BugCatchClient {
                 .POST(HttpRequest.BodyPublishers.ofString(json))
                 .build();
 
-        httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding())
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenAccept(response -> {
                     if (response.statusCode() >= 200 && response.statusCode() < 300) {
                         debug("Event sent: " + eventId + " (HTTP " + response.statusCode() + ")");
                     } else {
-                        debug("Unexpected status " + response.statusCode() + " for event " + eventId);
+                        System.err.println("[BugCatch] Failed to send event " + eventId
+                                + " — HTTP " + response.statusCode() + ": " + response.body());
                     }
                 })
                 .exceptionally(ex -> {
-                    if (options.isDebug()) {
-                        System.err.println("[BugCatch] Failed to send event " + eventId + ": " + ex.getMessage());
-                    }
+                    System.err.println("[BugCatch] Network error for event " + eventId + ": " + ex.getMessage());
                     return null;
                 });
 
@@ -242,7 +241,7 @@ public final class BugCatchClient {
     }
 
     private static String uuid() {
-        return UUID.randomUUID().toString().replace("-", "");
+        return UUID.randomUUID().toString();
     }
 
     private void debug(String msg) {
