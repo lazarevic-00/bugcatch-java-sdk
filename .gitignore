@@ -1,0 +1,6 @@
+target/
+.claude/
+*.class
+*.jar
+!*-sources.jar
+.DS_Store
